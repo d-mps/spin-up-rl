@@ -22,8 +22,32 @@ class PiNet(torch.nn.Module):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='CartPole-v0')
-    parser.add_argument('--lr', type=float)
+    parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--epochs', type=int, default=50)
     args = parser.parse_args()
-    print(args)
+
+    # Create environment for agent.
+    env = gym.make(args.env)
+    # Environment works for continuous state space
+    obs_space = env.observation_space
+    obs_dim = obs_space.shape[0]
+    # Environment works for Discrete action space, eg. Discrete(2)
+    num_actions = env.action_space.n
+
+    pi_theta = PiNet(in_dim=obs_dim, out_dim=num_actions)
+
+    def get_action_distribution(obs):
+        """Compute action distribution from current policy"""
+        logits = pi_theta(obs)
+
     # TRAIN
+    for epoch in range(args.epochs):
+        continue
+        # logging outputs
+        # log observations
+        # log actions taken
+        # log returns or weighting in policy gradient
+        # log episode returns
+        # log episode number of batches, each batch is a set of experiences
+
+
