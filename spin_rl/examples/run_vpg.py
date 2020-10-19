@@ -1,6 +1,3 @@
-import os
-print(os.path.abspath(os.getcwd()))
-
 import argparse
 import gym
 from spin_rl.algorithms.vpg import VanillaPolicyGradient
