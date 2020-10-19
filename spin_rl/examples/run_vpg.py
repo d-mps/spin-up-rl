@@ -3,7 +3,7 @@ print(os.path.abspath(os.getcwd()))
 
 import argparse
 import gym
-from src.algorithms.vpg import VanillaPolicyGradient
+from spin_rl.algorithms.vpg import VanillaPolicyGradient
 
 
 def arg_parser():
