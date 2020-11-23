@@ -1,107 +1,35 @@
-"""Vanilla Policy Gradient Algorithm
+"""REINFORCE Algorithm
 
-[Resources]
-https://spinningup.openai.com/en/latest/algorithms/vpg.html
-https://github.com/rll/rllab/blob/master/rllab/algos/vpg.py
-https://github.com/openai/spinningup/blob/master/spinup/examples/pytorch/pg_math/1_simple_pg.py
+Description:
+    The reinforce is an on-policy algorithm which samples.  
+
+Paper:
+    Williams, R. J. (1992). Simple statistical gradient-following algorithms for connectionist
+    reinforcement learning. Machine Learning, 8(3-4):229–256.
+    https://people.cs.umass.edu/~barto/courses/cs687/williams92simple.pdf
+    http://incompleteideas.net/book/the-book.html
+
+Resources:
+    https://spinningup.openai.com/en/latest/algorithms/vpg.html
+    https://github.com/rll/rllab/blob/master/rllab/algos/vpg.py
+    https://github.com/openai/spinningup/blob/master/spinup/examples/pytorch/pg_math/1_simple_pg.py
+    https://github.com/dennybritz/reinforcement-learning/blob/master/PolicyGradient/CliffWalk%20REINFORCE%20with%20Baseline%20Solution.ipynb
 """
+import gym
 import numpy as np
 import torch
 
 
-class VanillaPolicyGradient:
-    
-    def __init__(self, env, obs_dim, action_dim):
-        
-        # Set gym environment
-        self.env = env
-        # Initial policy gradient parameters, theta
-        self.pi_theta = Policy(input_dim=obs_dim, output_dim=action_dim)
-        # Initial value function parameters, phi
-        # self.q_phi = 
-        # Cache historical experiences for gradient update.
-        self.batch_obs = list()
-        # Sampled actions from current policy.
-        self.batch_actions = list()
-        # Weights for each logprob(a|s) is R(tau)
-        self.batch_weights = list()
-        self.batch_returns = list()
+from collections import defaultdict
+from torch.distributions.categorical import Categorical
+from torch.utils.tensorboard import SummaryWriter
 
-    def collect_trajectories(self, batch_size: int):
-        """Collect set of trajectories D_k = {Tau_i} by running
-        policy pi_k = pi(theta_k) in the environment.
-
-        Returns:
-            [type]: [description]
-        """
-        # Initial observation comes from a starting distribution
-        # TODO: experiment with starting distribution
-        obs = self.env.reset()
-    
-        # Store rewards which is the amount achieved by the action taken.
-        episode_rewards = list()
-        episode_done = False
-    
-        while True:
-            if episode_done:
-                # Compute return from episode rewards
-                ep_return = sum(episode_rewards)
-                self.batch_returns.append(ep_return)
-                self.batch_weights.extend([ep_return] * len(episode_rewards))
-                # Reset episode
-                obs = self.env.reset()
-                episode_rewards = list()
-
-                if len(self.batch_actions) >= batch_size:
-                    # End collection of experiences
-                    break
-
-            action = self.pi_theta.get_action_from_policy(obs)
-
-            # Store observation
-            self.batch_obs.append(obs.copy())
-
-            # Response from environment given sampled action
-            obs, reward, episode_done, _ = self.env.step(action)
-
-            # Store actions and rewards observed
-            self.batch_actions.append(action)
-            episode_rewards.append(reward)
-
-    def compute_advantage_estimates(self):
-        pass
-
-    def train(self, num_epochs: int, epoch_batch_size: int, learn_rate: float):
-        optimizer = torch.optim.Adam(self.pi_theta.parameters(), lr=learn_rate)
-
-        for epoch in range(num_epochs):
-            self.collect_trajectories(batch_size=epoch_batch_size)
-
-            epoch_obs = torch.as_tensor(self.batch_obs, dtype=torch.float32)
-            epoch_actions = torch.as_tensor(self.batch_actions, dtype=torch.int32)
-            epoch_weights = torch.as_tensor(self.batch_weights, dtype=torch.float32)
-
-            # Compute loss
-            logits = self.pi_theta.forward(epoch_obs)
-            action_dist = torch.distributions.categorical.Categorical(logits=logits)
-            log_probs = action_dist.log_prob(epoch_actions)
-            batch_loss = -(log_probs * epoch_weights).mean()
-            print('batch loss', round(batch_loss.item(), 2), 'reward', np.mean(self.batch_returns))
-
-            batch_loss.backward()
-            optimizer.step()
-
-            # reset cache
-            self.batch_returns = list()
-            self.batch_obs = list()
-            self.batch_actions = list()
-            self.batch_weights = list()
-
+PROD = 1
 
 class Policy(torch.nn.Module):
-    """Basic policy network pi_theta a policy with parameters theta."""
+    """Policy network π(a|s,θ)."""
 
-    def __init__(self, input_dim: int, output_dim: int):
+    def __init__(self, obs_dim: int, act_dim: int):
         """Instantiate policy network with environment specifications. 
 
         Args:
@@ -109,24 +37,137 @@ class Policy(torch.nn.Module):
             out_dim (int): number of actions possible
         """
         super(Policy, self).__init__()
-        self.linear1 = torch.nn.Linear(input_dim, 200)
-        self.linear2 = torch.nn.Linear(200, 50)
-        self.linear3 = torch.nn.Linear(50, output_dim)
+        self.linear1 = torch.nn.Linear(obs_dim, 64)
+        self.linear2 = torch.nn.Linear(64, act_dim)
         self.relu = torch.nn.ReLU()
 
     def forward(self, x):
+        x = torch.as_tensor(x, dtype=torch.float32)
         x = self.relu(self.linear1(x))
-        x = self.relu(self.linear2(x))
-        logits = self.linear3(x)
+        logits = self.linear2(x)
         return logits
     
-    def sample_action(self, logits):
-        action_distribution = torch.distributions.categorical.Categorical(logits=logits)
-        sample = action_distribution.sample().item()
-        return sample
+    def sample(self, obs):
+        """Sample an acion from the output of the policy network.
+        The log_prob is the loss function. Use negative logprob, because
+        Pytorch optimizers use gradient descent even though it is common
+        to find gradient ascent in the literature.
+
+        Args:
+            obs (np.array): Input specific to gym environment
+
+        Returns:
+            action (float): The action to take in the environment
+            log_prob (float): log probability that satisfies the Reinforce loss function
+        """
+        # Output unnormalized values for each possible action
+        logits = self.forward(torch.as_tensor(obs, dtype=torch.float32))
+        
+        # Note: this is equivalent to multinomial
+        # [Ref] https://pytorch.org/docs/stable/distributions.html
+        action_probs = Categorical(logits=logits)
+        action = action_probs.sample()
+        logprob = action_probs.log_prob(action)
+        return action.item(), -logprob.item()
+
+
+def reinforce(env, policy: object, num_episodes: int, gamma: float):
+    """Basic Reinforce algorithm (without baseline)
     
-    def get_action_from_policy(self, obs):
-        obs_tensor = torch.as_tensor(obs, dtype=torch.float32)
-        logits = self.forward(obs_tensor)
-        action = self.sample_action(logits)
-        return action
+    Credit to:
+        https://github.com/dennybritz/reinforcement-learning/blob/master/PolicyGradient
+        /CliffWalk%20REINFORCE%20with%20Baseline%20Solution.ipynb
+
+    Args:
+        env (gym.env): OpenAI Gym environment
+        policy (object): Action policy
+        n_episodes (int): Number of episodes 
+        gamma (float): Timestep discount factor
+
+    Returns:
+        None
+    """
+    ep_rew = np.zeros(num_episodes)
+    ep_steps = np.zeros(num_episodes, dtype=int)
+
+    optimizer = torch.optim.Adam(policy.parameters(), lr=0.0007)
+
+    # Step 1.
+    # Collect set of trajectories by running action policy in the environment.
+    # Trajectories are also called episodes or rollouts.
+    # [Ref] https://spinningup.openai.com/en/latest/spinningup/rl_intro.html#trajectories
+    for i_ep in range(num_episodes):
+        rollout = {'state': [], 'action': [], 'reward': [], 'neglogprob': []}
+        
+        # Initial observation comes from starting distribution
+        obs = env.reset()
+        done = False  # episode status
+
+        while not done:
+            # Sample current policy network π(a|s,θ)
+            action, neglogprob = policy.sample(obs)
+            
+            # Get feeback from environment based on the latest action decision
+            next_obs, reward, done, info = env.step(action)
+
+            # Store transition info
+            rollout['state'].append(obs)
+            rollout['action'].append(action)
+            rollout['reward'].append(reward)
+            rollout['neglogprob'].append(neglogprob)
+
+            ep_rew[i_ep] += reward
+            ep_steps[i_ep] += 1
+
+            obs = next_obs
+
+        # Step 2.
+        # Fit a model to estimate return from a given timestep until the end.
+        # This computes "reward-to-go" following the policy with discount factor.
+        rollout_returns = torch.zeros(ep_steps[i_ep])
+        for t in range(ep_steps[i_ep]):
+           rollout_returns[t] = sum(gamma**i_step * rew for i_step, rew in enumerate(rollout['reward'][t:]))
+
+        # Step 3.
+        # Improve the policy via batch update instead of single step
+        logits = policy.forward(rollout['state'])
+        action_dist = Categorical(logits=logits)
+        log_probs = action_dist.log_prob(torch.as_tensor(rollout['action'], dtype=torch.int32))
+        loss = (-log_probs * rollout_returns).mean()
+        print('epsiode=', i_ep, 'loss', round(loss.item(), 2), 'total return', sum(rollout['reward']))
+
+        loss.backward()
+        optimizer.step()
+
+
+if __name__ == "__main__":
+    # args here
+    environment_name = "CartPole-v1"
+    algorithm_name = 'vpg'
+    env = gym.make(environment_name)
+    
+    experiment_name = f'{environment_name}__{algorithm_name}'
+    writer = SummaryWriter(f'runs/{experiment_name}')
+    
+    if PROD:
+        import wandb
+        wandb.init(project="baselines", sync_tensorboard=True, name=experiment_name, monitor_gym=True)
+        writer = SummaryWriter(f'/tmp/{experiment_name}')
+    
+    obs_dim = env.observation_space.shape[0]
+    act_dim = env.action_space.n
+    action_policy = Policy(obs_dim=obs_dim, act_dim=act_dim)
+    reinforce(env, policy=action_policy, gamma=0.99, num_episodes=200)
+    print('Done')
+    
+    
+    # obs = env.reset()
+    # for t in range(500):
+    #     env.render()
+    #     action, _ = action_policy.sample(obs)
+    #     obs, reward, done, info = env.step(action)
+    #     if done:
+    #         print('episode finished after {} timesteps'.format(t+1))
+    #         break
+
+    env.close()
